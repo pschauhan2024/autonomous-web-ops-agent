@@ -6,10 +6,10 @@ pricing, campaign pages, partner updates, travel demand signals) into auditable 
 **task intake → agent planning → (plan approval) → controlled browser execution → structured
 extraction → snapshot comparison → reasoning loop → completion (summary, alerts, export, review)**
 
-> **Deployed application:** `https://<your-deployment-url>` (add after deploying; see *Deploy*)
+> **Deployed application:** `https://mmt-web-ops-agent-g2bj.onrender.com/` (add after deploying; see *Deploy*)
 > **Interactive demo (no backend needed):** open `frontend/index.html` directly; it detects that no
 > API is reachable and runs the same pipeline in the browser against bundled sample sources.
-> **Demonstration video:** `<Google Drive link, "Anyone with the link can view">`
+> **Demonstration video:** `(https://drive.google.com/file/d/1wB-BSHFLH2CHP6Gd7zstck-vgFYl0w6a/view?usp=sharing)`
 
 ![Live browser view](docs/screenshots/01_live_browser_booking.png)
 
@@ -25,6 +25,91 @@ extraction → snapshot comparison → reasoning loop → completion (summary, a
 
 macOS / Linux: `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt &&
 python -m playwright install chromium && uvicorn backend.api.main:app --port 8000`.
+
+## Deploy
+
+The app is deployed on **Render** (free plan) with the **Blueprint** feature. A Blueprint reads
+[`render.yaml`](render.yaml) from the repository and creates the service for you, so there is nothing to
+configure by hand except the secret values.
+
+> The screenshots below are illustrative and use sample values only (fake URL and fake keys).
+> The numbered markers match the steps.
+
+**What `render.yaml` sets up**
+
+```yaml
+services:
+  - type: web
+    name: mmt-web-ops-agent
+    runtime: docker
+    dockerfilePath: deployment/docker/Dockerfile
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: PUBLIC_BASE_URL        # sync: false = Render asks for the value
+      - key: DOMAIN_ALLOWLIST
+      - key: ANTHROPIC_API_KEY
+      - key: AVIATIONSTACK_API_KEY
+      - key: SNAPSHOT_DIR
+        value: /tmp/snapshots
+```
+
+One Docker web service, built from `deployment/docker/Dockerfile`, health-checked on `/api/health`.
+Variables marked `sync: false` are never stored in the repository; Render asks for them during setup.
+
+### Step 1: Create a Blueprint
+
+In the Render dashboard click **+ New** (1) and choose **Blueprint** (2).
+
+![New Blueprint](docs/screenshots/13_render_new_blueprint.png)
+
+### Step 2: Connect the repository
+
+Pick this GitHub repository and click **Connect** (3). If it is not listed, give Render's GitHub app
+access to the repository first.
+
+![Connect repository](docs/screenshots/14_render_connect_repo.png)
+
+### Step 3: Fill in the environment variables and deploy
+
+Render shows the Blueprint name, branch (`main`) and the service it found in `render.yaml`. Fill in the
+variables it asks for (4):
+
+| Variable | What to enter |
+| --- | --- |
+| `PUBLIC_BASE_URL` | The service URL, e.g. `https://<your-service>.onrender.com` |
+| `DOMAIN_ALLOWLIST` | `localhost,127.0.0.1,<your-service>.onrender.com,api.aviationstack.com` (comma separated, no spaces) |
+| `ANTHROPIC_API_KEY` | Your Anthropic API key (optional: without it the agent runs fully deterministic) |
+| `AVIATIONSTACK_API_KEY` | Your Aviationstack key (only needed for the live flight-status workflow) |
+
+Then click **Deploy Blueprint** (5).
+
+![Blueprint configuration and environment variables](docs/screenshots/15_render_blueprint_config.png)
+
+Tip: the exact `onrender.com` URL is only known after the first deploy. If you didn't know it yet, enter a
+placeholder, then update `PUBLIC_BASE_URL` and `DOMAIN_ALLOWLIST` in Step 4. The deployed host must be in
+`DOMAIN_ALLOWLIST`, otherwise the policy engine refuses to browse the bundled demo sources.
+
+### Step 4: Add or change the API key later (Environment tab)
+
+Open the service, go to **Environment** and add or edit the key, e.g. `ANTHROPIC_API_KEY` (6). Values are
+hidden after saving. Click **Save, rebuild, and deploy** (7) so the new value takes effect.
+
+![Environment variables](docs/screenshots/16_render_environment.png)
+
+Keep keys only in Render's Environment settings (or a local `.env`, which is git-ignored). Never commit
+them to the repository.
+
+### Step 5: Check that it is live
+
+The **Logs** tab shows the Docker build, the health check on `/api/health` returning `200 OK`, and the
+public URL once the service is live (8).
+
+![Deploy logs](docs/screenshots/17_render_deploy_live.png)
+
+**Free-plan notes:** the service sleeps after about 15 minutes without traffic, so the first request
+afterwards takes a while to wake it. Files under `/tmp` (snapshots, Aviationstack cache and request
+counter) are reset on every redeploy or restart. Pushing to `main` redeploys automatically.
 
 ## Watching the agent work
 
@@ -59,6 +144,7 @@ python -m playwright install chromium && uvicorn backend.api.main:app --port 800
 | Travel trends | Monitor | Wanderlytics | Destination demand index and events |
 | Catalogue scan | Monitor | books.toscrape.com (real, public) | Opens a category and reads listings across pages (needs internet) |
 | Custom steps | Either | Any allowlisted site | Your own JSON step list |
+| Flight status (live) | Monitor | Aviationstack API (real data) | Calls the Aviationstack API instead of opening a page (no browser needed): records flight number, airline, status, estimated times, delay, terminal and gate for a route such as DEL to BOM, then compares with the last run |
 
 ### Demo websites
 
@@ -160,6 +246,36 @@ tested end to end without scraping third-party sites. Production sources are add
 - Vector memory (pgvector/Qdrant) is not required for the three core workflows and is not wired in;
   snapshots and records are stored relationally with stable entity keys for comparison.
 
+## Live data: Aviationstack flight status
+
+The **Flight status (live data)** workflow reads real flight data from the [Aviationstack](https://aviationstack.com) API instead of the bundled demo sites. It uses the `fetch_api` action, so no browser is started: the API answer is turned into records and goes through the same extraction, comparison, reasoning and completion steps as every other workflow.
+
+**What it records:** flight number, airline, route, date, status, scheduled or estimated departure and arrival, departure delay in minutes, terminal and gate. This is flight *status*, not fares or availability.
+
+**Setup**
+
+1. Create a free key at aviationstack.com.
+2. Set `AVIATIONSTACK_API_KEY` as an environment variable: in `.env` locally, or under *Environment* on Render. Never commit the key.
+3. Add `api.aviationstack.com` to `DOMAIN_ALLOWLIST` (comma separated, no spaces).
+4. Choose **Flight status (live data)** when creating a task and enter airport codes, for example `DEL` and `BOM`.
+
+**Settings** (all optional except the key)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AVIATIONSTACK_API_KEY` | none | Required. Without it the run fails with a clear message; the mock sources still work. |
+| `AVIATIONSTACK_MONTHLY_LIMIT` | 90 | Stops calling the API after this many requests in a month, to protect the free quota (about 100). |
+| `AVIATIONSTACK_CACHE_TTL_MIN` | 60 | Identical queries inside this window are served from a local cache and cost no quota. |
+| `AVIATIONSTACK_ALLOW_HTTP` | false | Allows plain HTTP if the plan refuses HTTPS. The key then travels unencrypted, so use it only for a demo key. |
+
+**Good to know**
+
+- The free plan allows roughly 100 requests a month. The request counter and cache live in the server's temporary folder, so they reset when Render redeploys; check the Aviationstack dashboard for the real count.
+- Do not schedule this workflow more often than once a day on the free plan.
+- Several flight numbers can be one physical flight (codeshares), so identical times and gates across airlines are normal.
+- Times are shown as Aviationstack returns them (labelled `+00:00`); check against the airline before treating them as exact.
+- Code: `backend/services/aviationstack.py` (client, cache, quota guard), the `fetch_api` action in `agents/browser_execution/runner.py`, the `flight_status` schema in `extraction/schemas`, and the workflow in `agents/planner/workflows.py`. Tests: `tests/functional_tests/test_aviationstack.py`.
+
 ## Repository layout
 
 ```
@@ -174,17 +290,3 @@ docs/           architecture, api_reference, browser_policy, demonstration_flow,
 tests/          extraction_tests/, edge_cases/, functional_tests/, browser_tests/
 deployment/     docker/Dockerfile, vercel_notes.md, environment_setup.md
 ```
-
-## Team contribution
-
-| Area | Owner | Scope |
-|---|---|---|
-| Product & demo | _name_ | Workflows, success criteria, demo script |
-| Frontend | _name_ | Operations console |
-| Backend & API | _name_ | Job APIs, orchestrator, data model |
-| AI workflow | _name_ | Planner, reasoning loop, completion |
-| Browser automation | _name_ | Worker, policy engine |
-| Data extraction | _name_ | Schemas, normalizers, validators |
-| QA | _name_ | Test suite, edge cases |
-| Security & compliance | _name_ | Allowlist, RBAC, source governance |
-| Documentation & deployment | _name_ | README, docs, Docker/Render |
